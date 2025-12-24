@@ -2971,7 +2971,29 @@ async def metrics_scheduler(application):
 
 def main():
     """Основная функция"""
-    # Инициализация
+    
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import threading
+    
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/health':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'OK')
+            else:
+                self.send_response(404)
+                self.end_headers()
+    
+    def run_health_server():
+        server = HTTPServer(('0.0.0.0', 10000), HealthHandler)
+        server.serve_forever()
+    
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    logger.info("✅ HTTP-сервер для health check запущен на порту 10000")
+    
     logger.info("=" * 50)
     logger.info("🤖 ЗАПУСК МАССАЖНОГО БОТА")
     logger.info("=" * 50)
@@ -3044,4 +3066,5 @@ def main():
         ))
 
 if __name__ == "__main__":
+
     main()
