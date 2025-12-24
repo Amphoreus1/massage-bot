@@ -1,9 +1,10 @@
 python-telegram-bot==20.7
 python-dotenv==1.0.0
 aiosqlite==0.19.0
-pandas==2.1.4
+pandas==2.2.3
 openpyxl==3.1.2
 XlsxWriter==3.1.9
 schedule==1.2.0
 redis==5.0.1
+
 aiofiles==23.2.1
