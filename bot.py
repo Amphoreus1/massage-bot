@@ -18,10 +18,42 @@ import io
 
 import config
 
-from utils import monitoring
-from utils import security
-from database import backup
-import scheduler  # Добавлен импорт scheduler
+# Безопасные импорты для модулей, которые могут отсутствовать
+try:
+    from utils import monitoring
+    metrics_collector = monitoring.metrics_collector
+    METRICS_AVAILABLE = True
+except ImportError:
+    metrics_collector = None
+    METRICS_AVAILABLE = False
+    logger.warning("⚠️ Модуль monitoring не найден, метрики отключены")
+
+try:
+    from utils import security
+    security_obj = security.security
+    safe_sender = security.safe_sender
+    SECURITY_AVAILABLE = True
+except ImportError:
+    security_obj = None
+    safe_sender = None
+    SECURITY_AVAILABLE = False
+    logger.warning("⚠️ Модуль security не найден, безопасность отключена")
+
+try:
+    from database import backup
+    BACKUP_AVAILABLE = True
+except ImportError:
+    backup = None
+    BACKUP_AVAILABLE = False
+    logger.warning("⚠️ Модуль backup не найден, бэкапы отключены")
+
+try:
+    import scheduler
+    SCHEDULER_AVAILABLE = True
+except ImportError:
+    scheduler = None
+    SCHEDULER_AVAILABLE = False
+    logger.warning("⚠️ Модуль scheduler не найден, планировщик отключен")
 
 metrics_collector = monitoring.metrics_collector
 security_obj = security.security
@@ -865,12 +897,26 @@ async def send_notification(application, chat_id: int, message: str, parse_mode=
     start_time = datetime.now()
     
     try:
-        success = await safe_sender.send_message(
-            application.bot,
-            chat_id,
-            message,
-            parse_mode=parse_mode
-        )
+        success = False
+        try:
+            if safe_sender and SECURITY_AVAILABLE:
+                success = await safe_sender.send_message(
+                    application.bot,
+                    chat_id,
+                    message,
+                    parse_mode=parse_mode
+                )
+            else:
+                # Отправка напрямую, если safe_sender недоступен
+                await application.bot.send_message(
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode=parse_mode
+                )
+                success = True
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки сообщения: {e}")
+            success = False
         
         # Записываем метрики
         response_time = (datetime.now() - start_time).total_seconds()
@@ -2972,19 +3018,39 @@ async def metrics_scheduler(application):
 def main():
     """Основная функция"""
     
+    # ============================
+    # КОД ДЛЯ RENDER HEALTH CHECK (ИСПРАВЛЕННЫЙ)
+    # ============================
+    # Запускаем простой HTTP-сервер в отдельном потоке
+    # для ответа на проверки работоспособности от Render
     from http.server import HTTPServer, BaseHTTPRequestHandler
     import threading
+    import time
     
     class HealthHandler(BaseHTTPRequestHandler):
+        # Обрабатываем HEAD запросы (для Render)
+        def do_HEAD(self):
+            self.handle_request()
+        
+        # Обрабатываем GET запросы (для ручной проверки)
         def do_GET(self):
-            if self.path == '/health':
+            self.handle_request(send_body=True)
+        
+        def handle_request(self, send_body=False):
+            if self.path == '/health' or self.path == '/':
                 self.send_response(200)
                 self.send_header('Content-type', 'text/plain')
+                self.send_header('Cache-Control', 'no-cache')
                 self.end_headers()
-                self.wfile.write(b'OK')
+                if send_body:
+                    self.wfile.write(b'Bot is running!')
             else:
                 self.send_response(404)
                 self.end_headers()
+        
+        # Отключаем логирование каждого запроса
+        def log_message(self, format, *args):
+            pass
     
     def run_health_server():
         server = HTTPServer(('0.0.0.0', 10000), HealthHandler)
@@ -2993,6 +3059,7 @@ def main():
     health_thread = threading.Thread(target=run_health_server, daemon=True)
     health_thread.start()
     logger.info("✅ HTTP-сервер для health check запущен на порту 10000")
+    time.sleep(1)  # Даем серверу время запуститься
     
     logger.info("=" * 50)
     logger.info("🤖 ЗАПУСК МАССАЖНОГО БОТА")
@@ -3037,9 +3104,24 @@ def main():
     asyncio.set_event_loop(loop)
     
     loop.create_task(schedule_reminders(application))
-    loop.create_task(backup.schedule_backups(application))  # Исправлено: backup вместо db_backup
+    if BACKUP_AVAILABLE and backup:
+        try:
+            loop.create_task(backup.schedule_backups(application))
+            logger.info("✅ Планировщик бэкапов запущен")
+        except Exception as e:
+            logger.error(f"❌ Ошибка запуска планировщика бэкапов: {e}")
+    else:
+        logger.info("⚠️ Планировщик бэкапов не запущен (модуль недоступен)")
     
-    scheduler_task = loop.create_task(scheduler.start_metrics_scheduler(application))
+    scheduler_task = None
+    if SCHEDULER_AVAILABLE and scheduler:
+        try:
+            scheduler_task = loop.create_task(scheduler.start_metrics_scheduler(application))
+            logger.info("✅ Планировщик метрик запущен")
+        except Exception as e:
+            logger.error(f"❌ Ошибка запуска планировщика: {e}")
+    else:
+        logger.info("⚠️ Планировщик метрик не запущен (модуль недоступен)")
     
     logger.info("✅ Все системы запущены")
     logger.info("🤖 Бот готов к работе!")
@@ -3068,3 +3150,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
